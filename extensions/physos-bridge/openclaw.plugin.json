@@ -1,0 +1,37 @@
+{
+  "id": "physos-bridge",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "physosUrl": {
+        "type": "string",
+        "default": "http://127.0.0.1:3800",
+        "description": "PhysOS Ingress REST API base URL"
+      },
+      "physosWsUrl": {
+        "type": "string",
+        "default": "ws://127.0.0.1:3800",
+        "description": "PhysOS Ingress WebSocket URL"
+      },
+      "sourceApiKey": {
+        "type": "string",
+        "description": "Source API key for PhysOS authentication"
+      },
+      "adminToken": {
+        "type": "string",
+        "description": "Control plane admin token"
+      },
+      "adapterId": {
+        "type": "string",
+        "default": "openclaw_adapter",
+        "description": "Adapter ID for registration with PhysOS"
+      },
+      "heartbeatIntervalMs": {
+        "type": "number",
+        "default": 25000,
+        "description": "Heartbeat interval in milliseconds"
+      }
+    }
+  }
+}
