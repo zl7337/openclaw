@@ -275,6 +275,7 @@ export function augmentKnownForwardCompatModels(models: Model<Api>[]): Model<Api
 }
 
 const CODEX_GPT54_ELIGIBLE_PROVIDERS = new Set(["openai-codex"]);
+const CODEX_GPT53_SPARK_ELIGIBLE_PROVIDERS = new Set(["openai-codex"]);
 const CODEX_GPT53_ELIGIBLE_PROVIDERS = new Set(["openai-codex", "github-copilot"]);
 
 function resolveOpenAICodexForwardCompatModel(
@@ -291,6 +292,9 @@ function resolveOpenAICodexForwardCompatModel(
   if (lower === OPENAI_CODEX_GPT_54_MODEL_ID) {
     templateIds = OPENAI_CODEX_GPT_54_TEMPLATE_MODEL_IDS;
     eligibleProviders = CODEX_GPT54_ELIGIBLE_PROVIDERS;
+  } else if (lower === OPENAI_CODEX_GPT_53_SPARK_MODEL_ID) {
+    templateIds = [OPENAI_CODEX_GPT_53_MODEL_ID, ...OPENAI_CODEX_TEMPLATE_MODEL_IDS];
+    eligibleProviders = CODEX_GPT53_SPARK_ELIGIBLE_PROVIDERS;
   } else if (lower === OPENAI_CODEX_GPT_53_MODEL_ID) {
     templateIds = OPENAI_CODEX_TEMPLATE_MODEL_IDS;
     eligibleProviders = CODEX_GPT53_ELIGIBLE_PROVIDERS;
@@ -312,6 +316,10 @@ function resolveOpenAICodexForwardCompatModel(
       id: trimmedModelId,
       name: trimmedModelId,
     } as Model<Api>);
+  }
+
+  if (lower === OPENAI_CODEX_GPT_53_SPARK_MODEL_ID) {
+    return buildOpenAICodexSparkFallbackModel();
   }
 
   return normalizeModelCompat({
