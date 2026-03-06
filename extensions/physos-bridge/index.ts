@@ -15,6 +15,7 @@ import { createAdapterServer } from "./src/adapter-server.js";
 import { createPhysOSSubmitTool } from "./src/tools/physos-submit.js";
 import { createPhysOSQueryTool } from "./src/tools/physos-query.js";
 import { createPhysOSArmTool } from "./src/tools/physos-arm.js";
+import { createPhysOSRuleAdvisorTool } from "./src/tools/physos-rule-advisor.js";
 import { createPhysOSService } from "./src/service.js";
 
 const plugin = {
@@ -45,6 +46,9 @@ const plugin = {
     api.registerTool(createPhysOSSubmitTool(client));
     api.registerTool(createPhysOSQueryTool(client));
     api.registerTool(createPhysOSArmTool(client));
+
+    // C-ext-4: 注册规则建议工具
+    api.registerTool(createPhysOSRuleAdvisorTool());
   },
 };
 
