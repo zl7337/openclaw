@@ -1,0 +1,54 @@
+{
+  "$schema": "../../../interfaces/agents.schema.json",
+  "agents": [
+    {
+      "name": "physos",
+      "description": "PhysOS Cyber-Physical Controller — manages real-world devices through governance pipeline",
+      "system_prompt_ref": "SKILL.md",
+      "tools": ["physos_submit", "physos_query", "physos_arm"],
+      "capabilities": [
+        "device_control",
+        "safety_governance",
+        "action_planning"
+      ],
+      "a2a_config": {
+        "accept_messages": true,
+        "max_concurrent_sessions": 3,
+        "session_timeout_ms": 300000,
+        "routing_patterns": [
+          "turn on *",
+          "turn off *",
+          "set * to *",
+          "open *",
+          "close *",
+          "lock *",
+          "unlock *",
+          "drone *",
+          "robot *",
+          "晚安模式",
+          "离家模式",
+          "回家模式"
+        ]
+      },
+      "orchestration_examples": [
+        {
+          "trigger": "晚安模式",
+          "decomposed_actions": [
+            { "action": "curtain.close", "target_scope": "zone", "target_id": "bedroom" },
+            { "action": "light.dim", "params": { "brightness": 10 }, "target_scope": "zone", "target_id": "bedroom" },
+            { "action": "system.set_mode", "params": { "mode": "away" } }
+          ]
+        },
+        {
+          "trigger": "离家模式",
+          "decomposed_actions": [
+            { "action": "light.off", "target_scope": "zone", "target_id": "all" },
+            { "action": "lock.lock", "target_scope": "device", "target_id": "front_door" },
+            { "action": "alarm.arm", "target_scope": "zone", "target_id": "all" },
+            { "action": "system.set_mode", "params": { "mode": "away" } }
+          ]
+        }
+      ]
+    }
+  ]
+}
