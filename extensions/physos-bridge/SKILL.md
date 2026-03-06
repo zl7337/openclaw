@@ -63,6 +63,7 @@ Manage ARM tokens. **Required before executing `armed_live` + `safety_critical` 
 |--------|-------------|-------|
 | robot.move | irreversible | speed 0-2 m/s, duration 100-60000ms |
 | robot.dock | reversible | |
+| robot.return_home | irreversible | Auto-return on disconnect (F-5.3) |
 | arm.move_joint | **safety_critical** | ⚠️ Requires HITL + ARM. joint 0-6, angle ±180° |
 | vacuum.start | reversible | |
 | vacuum.dock | reversible | |
