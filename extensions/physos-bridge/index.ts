@@ -16,7 +16,7 @@ import { createPhysOSSubmitTool } from "./src/tools/physos-submit.js";
 import { createPhysOSQueryTool } from "./src/tools/physos-query.js";
 import { createPhysOSArmTool } from "./src/tools/physos-arm.js";
 import { createPhysOSRuleAdvisorTool } from "./src/tools/physos-rule-advisor.js";
-import { createPhysOSService } from "./src/service.js";
+import { createPhysOSService, getAgentClient } from "./src/service.js";
 
 const plugin = {
   id: "physos-bridge",
@@ -34,13 +34,29 @@ const plugin = {
       heartbeatIntervalMs: rawConfig.heartbeatIntervalMs ?? DEFAULT_PHYSOS_CONFIG.heartbeatIntervalMs!,
     };
 
-    const client = new PhysOSClient(config);
+    // 将 Gateway 配置注入环境变量，供 adapter-server 的 executeTool 使用
+    try {
+      const fs = require('node:fs');
+      const path = require('node:path');
+      const home = process.env.HOME || process.env.USERPROFILE || '';
+      const cfgPath = path.join(home, '.openclaw', 'openclaw.json');
+      const fullCfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+      if (fullCfg.gateway?.port) {
+        process.env.OPENCLAW_GATEWAY_PORT = String(fullCfg.gateway.port);
+      }
+      if (fullCfg.gateway?.auth?.token) {
+        process.env.OPENCLAW_GATEWAY_TOKEN = fullCfg.gateway.auth.token;
+      }
+    } catch { /* 静默失败，executeTool 会用默认值 */ }
+
+    // v5.0: 增大超时至 65s — postIntent() 现在会阻塞等待完整执行（含 AI agent 处理 30-50s）
+    const client = new PhysOSClient(config, { timeoutMs: 65_000 });
 
     // B-8: 注册服务（心跳 + 适配器注册/注销）
     api.registerService(createPhysOSService(config, client));
 
-    // B-3: 注册 Adapter 执行回调端点
-    api.registerHttpRoute(createAdapterServer(api, config));
+    // B-3: 注册 Adapter 执行回调端点（v5.0: 传入 agentClient getter 支持双轨执行）
+    api.registerHttpRoute(createAdapterServer(api, config, getAgentClient));
 
     // B-4: 注册 3 个 PhysOS 工具
     api.registerTool(createPhysOSSubmitTool(client));

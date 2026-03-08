@@ -1,14 +1,21 @@
 /**
- * v4.0 B-8: 自动注册 + 心跳服务
+ * v4.0 B-8 → v5.0: 自动注册 + 心跳服务（AI Agent 意图驱动）
  *
  * 通过 api.registerService() 启动后台常驻服务：
- * - start(): registerAdapter + setInterval heartbeat (25s) + WebSocket 事件订阅
- * - stop(): clearInterval + removeAdapter + 关闭 WebSocket
- * - 断连: 指数退避重试 1s→2s→4s→8s→30s 封顶, 连续失败10次 → WARN
+ * - start(): 注册域级通配符能力 + 初始化 AI agent client + 心跳 + WebSocket 事件订阅
+ * - stop(): 关闭 agent client + clearInterval + removeAdapter + 关闭 WebSocket
+ *
+ * v5.0 变更:
+ * - 移除工具探测逻辑（PROBE_TOOLS / probeTool / discoverGatewayTools / deriveCapabilities）
+ * - 直接注册 ['digital.*', 'notification.*'] 域级通配符能力
+ * - 初始化 GatewayAgentClient 用于智能通道执行
+ * - 导出 agentClient 供 adapter-server 使用
  */
 
 import type { PhysOSConfig } from "./types.js";
 import type { PhysOSClient } from "./physos-client.js";
+import { createGatewayAgentClient } from "./gateway-agent-client.js";
+import type { GatewayAgentClient } from "./gateway-agent-client.js";
 
 /** OpenClawPluginServiceContext — 跨仓库重新声明 */
 interface ServiceContext {
@@ -22,15 +29,21 @@ interface ServiceContext {
   };
 }
 
-const DIGITAL_CAPABILITIES = [
-  'digital.browser_open',
-  'digital.browser_click',
-  'digital.send_message',
-  'digital.run_script',
-  'digital.file_operation',
-];
-
 const MAX_CONSECUTIVE_FAILURES = 10;
+
+/** 导出当前注册的动态能力列表 */
+let _registeredCapabilities: string[] = [];
+
+export function getRegisteredCapabilities(): string[] {
+  return _registeredCapabilities;
+}
+
+/** 导出 agent client 供 adapter-server 使用 */
+let _agentClient: GatewayAgentClient | null = null;
+
+export function getAgentClient(): GatewayAgentClient | null {
+  return _agentClient;
+}
 
 export function createPhysOSService(
   config: PhysOSConfig,
@@ -52,7 +65,6 @@ export function createPhysOSService(
   ): Promise<void> {
     try {
       await fn();
-      // 成功 → 重置
       consecutiveFailures = 0;
       retryDelay = 1000;
     } catch (err) {
@@ -62,7 +74,6 @@ export function createPhysOSService(
           `[physos-bridge] ${label}: ${consecutiveFailures} consecutive failures — ${(err as Error).message}`,
         );
       }
-      // 指数退避
       retryDelay = Math.min(retryDelay * 2, 30_000);
     }
   }
@@ -73,33 +84,70 @@ export function createPhysOSService(
     async start(ctx: ServiceContext) {
       ctx.logger.info('[physos-bridge] Starting PhysOS heartbeat service...');
 
-      // Step 2a: 注册 Adapter
+      // ── Step 1: 域级通配符能力注册（替代工具探测）──
+      const capabilities = ['digital.*', 'notification.*'];
+      const discoveryMode = 'agent_mediated';
+
+      _registeredCapabilities = capabilities;
+
+      ctx.logger.info(
+        `[physos-bridge] Registering domain-level capabilities: ${capabilities.join(', ')}`,
+      );
+
+      // ── Step 2: 初始化 AI Agent Client ──
+      const gatewayPort = Number(process.env.OPENCLAW_GATEWAY_PORT || 18789);
+      const gatewayToken = process.env.OPENCLAW_GATEWAY_TOKEN || '';
+
+      const agentClient = createGatewayAgentClient({
+        gatewayPort,
+        gatewayToken,
+        logger: ctx.logger,
+      });
+
+      // 延迟连接 — 给 Gateway 足够时间完成启动
+      // Agent client 连接在注册 adapter 之后，因为 Gateway WS 可能需要更多时间
+      setTimeout(async () => {
+        try {
+          await agentClient.connect();
+          ctx.logger.info('[physos-bridge] AI Agent client connected');
+        } catch (err) {
+          ctx.logger.warn(
+            `[physos-bridge] AI Agent client connect failed (will auto-retry): ${(err as Error).message}`,
+          );
+        }
+      }, 2000);
+
+      _agentClient = agentClient;
+
+      // ── Step 3: 注册 Adapter ──
       try {
         await client.registerAdapter({
           adapter_id: config.adapterId,
           online: true,
-          capabilities: DIGITAL_CAPABILITIES,
+          capabilities,
           metadata: {
             type: 'openclaw',
-            execute_url: `http://openclaw_bridge:18789/physos/execute`,
-            version: '1.0',
+            execute_url: `http://127.0.0.1:${gatewayPort}/physos/execute`,
+            version: '2.0',
+            discovery_mode: discoveryMode,
+            execution_mode: 'ai_agent',
           },
         });
         ctx.logger.info(
-          `[physos-bridge] Adapter registered: ${config.adapterId} (${DIGITAL_CAPABILITIES.length} capabilities)`,
+          `[physos-bridge] Adapter registered: ${config.adapterId} ` +
+          `(${capabilities.length} capabilities, mode=${discoveryMode})`,
         );
+        ctx.logger.info(`[physos-bridge] Capabilities: ${capabilities.join(', ')}`);
       } catch (err) {
         ctx.logger.warn(
           `[physos-bridge] Initial adapter registration failed (will retry): ${(err as Error).message}`,
         );
       }
 
-      // Step 2b: 启动心跳定时器 (25s < TTL/2 = 30s)
+      // ── Step 4: 启动心跳定时器 ──
       heartbeatTimer = setInterval(() => {
         void withBackoff(
-          async () => {
-            await client.heartbeat(config.adapterId);
-          },
+          async () => { await client.heartbeat(config.adapterId); },
           'heartbeat',
           ctx.logger,
         );
@@ -109,7 +157,7 @@ export function createPhysOSService(
         `[physos-bridge] Heartbeat started: every ${config.heartbeatIntervalMs}ms`,
       );
 
-      // Step 2c: WebSocket 事件订阅
+      // ── Step 5: WebSocket 事件订阅 ──
       try {
         wsConnection = client.connectEvents((event) => {
           ctx.logger.info(`[physos-bridge] Event: ${JSON.stringify(event)}`);
@@ -125,13 +173,17 @@ export function createPhysOSService(
     async stop(ctx: ServiceContext) {
       ctx.logger.info('[physos-bridge] Stopping PhysOS heartbeat service...');
 
-      // Step 3a: 停止心跳
+      // 关闭 AI Agent Client
+      if (_agentClient) {
+        _agentClient.close();
+        _agentClient = null;
+      }
+
       if (heartbeatTimer) {
         clearInterval(heartbeatTimer);
         heartbeatTimer = null;
       }
 
-      // Step 3b: 注销 Adapter
       try {
         await client.removeAdapter(config.adapterId);
         ctx.logger.info(`[physos-bridge] Adapter removed: ${config.adapterId}`);
@@ -141,7 +193,6 @@ export function createPhysOSService(
         );
       }
 
-      // Step 3c: 关闭 WebSocket
       if (wsConnection) {
         wsConnection.close();
         wsConnection = null;

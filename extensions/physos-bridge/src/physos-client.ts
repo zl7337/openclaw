@@ -67,7 +67,7 @@ export class PhysOSClient {
   /** POST /intent — 提交 intent */
   async postIntent(envelope: IntentEnvelope): Promise<IntentSubmitResponse> {
     return this.request<IntentSubmitResponse>('POST', '/intent', envelope, {
-      'x-source-api-key': this.sourceApiKey,
+      'x-api-key': this.sourceApiKey,
     });
   }
 
@@ -77,14 +77,14 @@ export class PhysOSClient {
     source: { source_id: string; source_type: string },
   ): Promise<unknown> {
     return this.request('POST', '/utterance', { text, source }, {
-      'x-source-api-key': this.sourceApiKey,
+      'x-api-key': this.sourceApiKey,
     });
   }
 
   /** POST /adapters/register — 注册适配器 */
   async registerAdapter(input: AdapterRegisterInput): Promise<unknown> {
     return this.request('POST', '/adapters/register', input, {
-      'x-source-api-key': this.sourceApiKey,
+      'x-api-key': this.sourceApiKey,
       'x-control-plane-admin-token': this.adminToken,
     });
   }
@@ -92,7 +92,7 @@ export class PhysOSClient {
   /** POST /adapters/:id/heartbeat — 心跳 */
   async heartbeat(adapterId: string): Promise<unknown> {
     return this.request('POST', `/adapters/${encodeURIComponent(adapterId)}/heartbeat`, undefined, {
-      'x-source-api-key': this.sourceApiKey,
+      'x-api-key': this.sourceApiKey,
       'x-control-plane-admin-token': this.adminToken,
     });
   }
@@ -100,7 +100,7 @@ export class PhysOSClient {
   /** DELETE /adapters/:id — 移除适配器 */
   async removeAdapter(adapterId: string): Promise<unknown> {
     return this.request('DELETE', `/adapters/${encodeURIComponent(adapterId)}`, undefined, {
-      'x-source-api-key': this.sourceApiKey,
+      'x-api-key': this.sourceApiKey,
       'x-control-plane-admin-token': this.adminToken,
     });
   }
@@ -113,7 +113,7 @@ export class PhysOSClient {
   /** GET /adapters/snapshot — 适配器快照 */
   async getAdapterSnapshot(): Promise<unknown> {
     return this.request('GET', '/adapters/snapshot', undefined, {
-      'x-source-api-key': this.sourceApiKey,
+      'x-api-key': this.sourceApiKey,
       'x-control-plane-admin-token': this.adminToken,
     });
   }
@@ -121,14 +121,14 @@ export class PhysOSClient {
   /** GET /trace/:traceId — 获取 trace */
   async getTrace(traceId: string): Promise<unknown> {
     return this.request('GET', `/trace/${encodeURIComponent(traceId)}`, undefined, {
-      'x-source-api-key': this.sourceApiKey,
+      'x-api-key': this.sourceApiKey,
     });
   }
 
   /** GET /intent/:intentId — 获取 intent */
   async getIntent(intentId: string): Promise<unknown> {
     return this.request('GET', `/intent/${encodeURIComponent(intentId)}`, undefined, {
-      'x-source-api-key': this.sourceApiKey,
+      'x-api-key': this.sourceApiKey,
     });
   }
 

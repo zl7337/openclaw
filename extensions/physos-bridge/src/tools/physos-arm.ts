@@ -20,6 +20,22 @@ let armTokenState: {
 
 const ARM_TOKEN_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
+/**
+ * 获取当前有效的 ARM Token（供 physos_submit 透传到 intent metadata）。
+ * 如果 token 不存在或已过期，返回 undefined。
+ */
+export function getActiveArmToken(): { token_id: string; expires_at: string } | undefined {
+  if (!armTokenState.token) return undefined;
+  if (Date.now() > armTokenState.expiresAt) {
+    armTokenState = { token: null, issuedAt: 0, expiresAt: 0 };
+    return undefined;
+  }
+  return {
+    token_id: armTokenState.token,
+    expires_at: new Date(armTokenState.expiresAt).toISOString(),
+  };
+}
+
 export function createPhysOSArmTool(client: PhysOSClient) {
   return {
     name: "physos_arm",
