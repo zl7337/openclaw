@@ -25,7 +25,7 @@ export function createPhysOSSubmitTool(client: PhysOSClient) {
       properties: {
         action: {
           type: "string",
-          description: "Action name, e.g. 'light.on', 'thermostat.set_temperature', 'drone.takeoff'",
+          description: "Action name, e.g. 'light.on', 'thermostat.set_temperature', 'drone.takeoff', 'car.move_pulse', 'car.arm', 'car.stop'",
         },
         description: {
           type: "string",
@@ -48,7 +48,11 @@ export function createPhysOSSubmitTool(client: PhysOSClient) {
             "For digital.open_terminal_and_type, MUST include { command: 'the shell command to run' }. " +
             "For digital.run_script, MUST include { command: 'the script/command to execute' }. " +
             "For digital.browser_open, include { url: 'https://...' }. " +
-            "Examples: { command: 'open -a \"Google Chrome\" \"https://google.com\"' }, { brightness: 80 }",
+            "IMPORTANT for car.* actions: " +
+            "For car.move_pulse, MUST include { direction: 'forward'|'backward'|'left'|'right', duration_ms: <milliseconds>, throttle: <0.0-1.0> }. " +
+            "duration_ms is the move duration in milliseconds (e.g. 5000 for 5 seconds). throttle defaults to 0.5. " +
+            "For car.arm / car.disarm / car.stop, no extra params needed. " +
+            "Examples: { command: 'open -a \"Google Chrome\" \"https://google.com\"' }, { direction: 'forward', duration_ms: 5000, throttle: 0.5 }",
         },
         domain: {
           type: "string",
