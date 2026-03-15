@@ -8,6 +8,8 @@
  */
 
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { PhysOSConfig } from "./src/types.js";
 import { DEFAULT_PHYSOS_CONFIG } from "./src/types.js";
 import { PhysOSClient } from "./src/physos-client.js";
@@ -34,18 +36,24 @@ const plugin = {
       heartbeatIntervalMs: rawConfig.heartbeatIntervalMs ?? DEFAULT_PHYSOS_CONFIG.heartbeatIntervalMs!,
     };
 
-    // 将 Gateway 配置注入环境变量，供 adapter-server 的 executeTool 使用
+    // 将 Gateway 配置注入环境变量，供 adapter-server 的 executeTool 和 agent-client 使用
     try {
-      const fs = require('node:fs');
-      const path = require('node:path');
-      const home = process.env.HOME || process.env.USERPROFILE || '';
-      const cfgPath = path.join(home, '.openclaw', 'openclaw.json');
-      const fullCfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
-      if (fullCfg.gateway?.port) {
-        process.env.OPENCLAW_GATEWAY_PORT = String(fullCfg.gateway.port);
+      // 优先从 plugin API 获取 config（Gateway 已解析好的），fallback 到文件读取
+      const gwConfig = (api as any).config?.gateway ?? (api as any).config?.get?.('gateway');
+      let gwToken = gwConfig?.auth?.token;
+      let gwPort = gwConfig?.port;
+      if (!gwToken) {
+        const home = process.env.HOME || process.env.USERPROFILE || '';
+        const cfgPath = join(home, '.openclaw', 'openclaw.json');
+        const fullCfg = JSON.parse(readFileSync(cfgPath, 'utf-8'));
+        gwToken = fullCfg.gateway?.auth?.token;
+        gwPort = gwPort || fullCfg.gateway?.port;
       }
-      if (fullCfg.gateway?.auth?.token) {
-        process.env.OPENCLAW_GATEWAY_TOKEN = fullCfg.gateway.auth.token;
+      if (gwPort) {
+        process.env.OPENCLAW_GATEWAY_PORT = String(gwPort);
+      }
+      if (gwToken) {
+        process.env.OPENCLAW_GATEWAY_TOKEN = gwToken;
       }
     } catch { /* 静默失败，executeTool 会用默认值 */ }
 

@@ -20,6 +20,8 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type {
   PhysOSConfig,
@@ -54,9 +56,27 @@ interface ToolMapping {
  *
  * 规则：
  * 1. 已知 digital.* 动作 → 精确映射
- * 2. 通知动作 → message tool
+ * 2. 通知动作 → message tool (快速通道，直接发 Telegram DM)
  * 3. 其他动作 → 返回 null（交给智能通道）
  */
+
+/** 缓存 Telegram owner chatId，避免每次读文件 */
+let _telegramOwnerChatId: string | null | undefined;
+
+function resolveTelegramOwnerChatId(): string | null {
+  if (_telegramOwnerChatId !== undefined) return _telegramOwnerChatId;
+  try {
+    const home = process.env.HOME ?? process.env.USERPROFILE ?? '';
+    const allowFromPath = join(home, '.openclaw', 'credentials', 'telegram-default-allowFrom.json');
+    const raw = JSON.parse(readFileSync(allowFromPath, 'utf-8'));
+    const ids = raw?.allowFrom;
+    _telegramOwnerChatId = Array.isArray(ids) && ids.length > 0 ? String(ids[0]) : null;
+  } catch {
+    _telegramOwnerChatId = null;
+  }
+  return _telegramOwnerChatId;
+}
+
 function resolveActionToTool(
   action: string,
   params?: Record<string, unknown>,
@@ -69,8 +89,17 @@ function resolveActionToTool(
       return { tool: 'browser', args: { action: 'click', selector: params?.selector ?? '' } };
     case 'digital.send_message':
       return { tool: 'message', args: { action: 'send', to: params?.to ?? '', text: params?.body ?? params?.text ?? '' } };
+    // notification.send / notification.broadcast: 快速通道 → message tool + Telegram DM
     case 'notification.send':
-      return { tool: 'message', args: { action: 'notify', to: params?.to ?? 'user', text: params?.message ?? params?.body ?? '' } };
+    case 'notification.broadcast': {
+      const chatId = resolveTelegramOwnerChatId();
+      if (chatId) {
+        const text = String(params?.message ?? params?.text ?? params?.body ?? '通知');
+        return { tool: 'message', args: { action: 'send', to: chatId, message: text, channel: 'telegram' } };
+      }
+      // chatId 未找到 → 降级到智能通道
+      return null;
+    }
   }
 
   // ── 域前缀解析区 ──
@@ -272,6 +301,26 @@ export function createAdapterServer(
           );
 
           const toolResult = await Promise.race([execPromise, timeoutPromise]);
+
+          // ── Dual-write: 通知消息回写到 Telegram 会话 ──
+          // 快速通道绕过了 AI agent，消息不会出现在 Telegram 对话上下文里。
+          // 用 chat.inject 写入 session transcript，让 AI agent 能看到历史通知。
+          if (
+            (action === 'notification.send' || action === 'notification.broadcast') &&
+            agentClient?.connected
+          ) {
+            const chatId = resolveTelegramOwnerChatId();
+            if (chatId) {
+              const notifText = String(params?.message ?? params?.text ?? params?.body ?? '通知');
+              const sessionKey = `telegram:direct:${chatId}`;
+              // 异步注入 — 不阻塞主响应
+              agentClient.injectToSession({
+                sessionKey,
+                message: `[PhysOS 通知] ${notifText}`,
+                label: 'physos-notification',
+              }).catch(() => { /* best-effort */ });
+            }
+          }
 
           const meta: AdapterExecutionMeta = {
             adapter_id: config.adapterId,

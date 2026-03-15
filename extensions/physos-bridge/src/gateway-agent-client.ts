@@ -13,6 +13,14 @@
  */
 
 // ────────────────────────────────────────────
+// Imports
+// ────────────────────────────────────────────
+
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { sign as ed25519Sign, createPrivateKey } from 'node:crypto';
+
+// ────────────────────────────────────────────
 // Types
 // ────────────────────────────────────────────
 
@@ -48,6 +56,12 @@ export interface GatewayAgentClient {
     traceId: string;
     timeoutMs?: number;
   }): Promise<AgentExecutionResult>;
+  /** Inject a message into an existing session transcript (dual-write for fast path) */
+  injectToSession(params: {
+    sessionKey: string;
+    message: string;
+    label?: string;
+  }): Promise<boolean>;
   close(): void;
   readonly connected: boolean;
 }
@@ -72,12 +86,73 @@ function nextId(): string {
   return `physos-${Date.now()}-${++_idCounter}`;
 }
 
+// ── Device identity helpers ──
+
+interface DeviceIdentity {
+  deviceId: string;
+  publicKeyPem: string;
+  privateKeyPem: string;
+}
+
+interface DeviceAuth {
+  deviceToken: string;
+}
+
+function loadDeviceIdentity(logger: Logger): DeviceIdentity | null {
+  try {
+    const home = process.env.HOME ?? process.env.USERPROFILE ?? '';
+    const idPath = join(home, '.openclaw', 'identity', 'device.json');
+    const raw = JSON.parse(readFileSync(idPath, 'utf-8'));
+    if (raw.deviceId && raw.publicKeyPem && raw.privateKeyPem) {
+      return { deviceId: raw.deviceId, publicKeyPem: raw.publicKeyPem, privateKeyPem: raw.privateKeyPem };
+    }
+    return null;
+  } catch {
+    logger.warn('[physos-agent-client] device identity not found');
+    return null;
+  }
+}
+
+function loadDeviceAuth(logger: Logger): DeviceAuth | null {
+  try {
+    const home = process.env.HOME ?? process.env.USERPROFILE ?? '';
+    const authPath = join(home, '.openclaw', 'identity', 'device-auth.json');
+    const raw = JSON.parse(readFileSync(authPath, 'utf-8'));
+    const token = raw?.tokens?.operator?.token;
+    if (typeof token === 'string' && token.length > 0) {
+      return { deviceToken: token };
+    }
+    return null;
+  } catch {
+    logger.warn('[physos-agent-client] device auth not found');
+    return null;
+  }
+}
+
+function base64UrlEncode(buf: Buffer): string {
+  return buf.toString('base64').replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/g, '');
+}
+
+function signDevicePayload(privateKeyPem: string, payload: string): string {
+  const key = createPrivateKey(privateKeyPem);
+  return base64UrlEncode(
+    ed25519Sign(null, Buffer.from(payload, 'utf-8'), key),
+  );
+}
+
 export function createGatewayAgentClient(opts: {
   gatewayPort: number;
   gatewayToken: string;
   logger: Logger;
 }): GatewayAgentClient {
   const { gatewayPort, gatewayToken, logger } = opts;
+
+  // Load device identity for connect handshake
+  const deviceId = loadDeviceIdentity(logger);
+  const deviceAuth = loadDeviceAuth(logger);
+  if (deviceId) {
+    logger.info(`[physos-agent-client] device identity loaded: ${deviceId.deviceId.slice(0, 12)}...`);
+  }
 
   let ws: WebSocket | null = null;
   let _connected = false;
@@ -107,21 +182,39 @@ export function createGatewayAgentClient(opts: {
     }
   >();
 
+  // Captured challenge nonce from Gateway's connect.challenge event
+  let _challengeNonce: string | null = null;
+  let _challengeResolve: ((nonce: string) => void) | null = null;
+
   // ── WebSocket message handler ──
 
   function onMessage(data: unknown): void {
-    let frame: GatewayFrame;
+    let frame: Record<string, unknown>;
     try {
       const text = typeof data === 'string' ? data : String(data);
-      frame = JSON.parse(text) as GatewayFrame;
+      frame = JSON.parse(text) as Record<string, unknown>;
     } catch {
       return;
     }
 
     if (!frame || typeof frame !== 'object' || !('type' in frame)) return;
 
+    // Handle connect.challenge event (arrives before connect handshake)
+    if (frame.type === 'event' && frame.event === 'connect.challenge') {
+      const payload = frame.payload as Record<string, unknown> | undefined;
+      const nonce = payload?.nonce;
+      if (typeof nonce === 'string') {
+        _challengeNonce = nonce;
+        if (_challengeResolve) {
+          _challengeResolve(nonce);
+          _challengeResolve = null;
+        }
+      }
+      return;
+    }
+
     if (frame.type === 'res') {
-      const res = frame as GatewayResFrame;
+      const res = frame as unknown as GatewayResFrame;
 
       // Check agent waiters first (they handle multiple responses per ID)
       const agentWaiter = agentWaiters.get(res.id);
@@ -174,8 +267,9 @@ export function createGatewayAgentClient(opts: {
       socket.onopen = async () => {
         clearTimeout(openTimeout);
         ws = socket;
+        _challengeNonce = null;
 
-        // Wire up message handler
+        // Wire up message handler FIRST so we capture connect.challenge
         socket.onmessage = (evt) => onMessage(evt.data);
         socket.onclose = () => {
           _connected = false;
@@ -188,11 +282,24 @@ export function createGatewayAgentClient(opts: {
           // onclose will handle reconnect
         };
 
-        // Send connect handshake
+        // Wait for connect.challenge nonce (Gateway sends it right after WS open)
         try {
-          const connectRes = await request('connect', {
+          const nonce = await new Promise<string>((res, rej) => {
+            if (_challengeNonce) { res(_challengeNonce); return; }
+            const timer = setTimeout(() => { rej(new Error('connect.challenge timeout')); }, 5000);
+            _challengeResolve = (n) => { clearTimeout(timer); res(n); };
+          });
+
+          // Build connect params with device identity
+          const role = 'operator';
+          const scopes = ['operator.admin', 'operator.write'];
+          const signedAt = Date.now();
+
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const connectParams: Record<string, any> = {
             minProtocol: 3,
             maxProtocol: 3,
+            role,
             client: {
               id: 'gateway-client',
               displayName: 'PhysOS Bridge Agent Client',
@@ -202,9 +309,40 @@ export function createGatewayAgentClient(opts: {
             },
             auth: {
               token: gatewayToken,
+              ...(deviceAuth ? { deviceToken: deviceAuth.deviceToken } : {}),
             },
-            scopes: ['operator.admin'],
-          });
+            scopes,
+          };
+
+          // Sign nonce with device identity (Ed25519)
+          if (deviceId) {
+            const signaturePayload = [
+              'v3',
+              deviceId.deviceId,
+              'gateway-client',    // clientId
+              'backend',           // clientMode
+              role,
+              scopes.join(','),
+              String(signedAt),
+              gatewayToken,        // token (resolveSignatureToken returns connectParams.auth.token)
+              nonce,
+              'node',              // platform
+              '',                  // deviceFamily (not set)
+            ].join('|');
+
+            const signature = signDevicePayload(deviceId.privateKeyPem, signaturePayload);
+
+            connectParams.device = {
+              id: deviceId.deviceId,
+              publicKey: deviceId.publicKeyPem,
+              signature,
+              signedAt,
+              nonce,
+            };
+            logger.info(`[physos-agent-client] device identity signed, nonce=${nonce.slice(0, 8)}...`);
+          }
+
+          const connectRes = await request('connect', connectParams);
 
           if (!connectRes.ok) {
             reject(new Error(`connect handshake failed: ${connectRes.error?.message ?? 'unknown'}`));
@@ -320,6 +458,29 @@ export function createGatewayAgentClient(opts: {
       }
     },
 
+    async injectToSession(params: {
+      sessionKey: string;
+      message: string;
+      label?: string;
+    }): Promise<boolean> {
+      if (!_connected || !ws || ws.readyState !== WebSocket.OPEN) {
+        logger.warn('[physos-agent-client] injectToSession: not connected');
+        return false;
+      }
+      try {
+        const res = await request('chat.inject', params);
+        if (res.ok) {
+          logger.info(`[physos-agent-client] injectToSession OK → ${params.sessionKey}`);
+        } else {
+          logger.warn(`[physos-agent-client] injectToSession failed: ${res.error?.message ?? 'unknown'}`);
+        }
+        return res.ok === true;
+      } catch (err) {
+        logger.warn(`[physos-agent-client] injectToSession error: ${(err as Error).message}`);
+        return false;
+      }
+    },
+
     async executeViaAgent(params: {
       action: string;
       actionParams?: Record<string, unknown>;
@@ -390,6 +551,19 @@ export function createGatewayAgentClient(opts: {
         '4. After executing, report the ACTUAL tool output as JSON: { "success": true/false, "output": "..." }',
         '5. If a tool call fails or returns an error, report success: false with the actual error message.',
       );
+
+      // Notification-specific hints: guide agent to use the message tool correctly
+      if (params.action.startsWith('notification.')) {
+        const msgParam = (params.actionParams?.message as string) ?? '';
+        lines.push(
+          '',
+          'NOTIFICATION RULES:',
+          '- For ALL notification.* actions (send, broadcast, etc.), use the "message" tool with action "broadcast" and channel "telegram".',
+          '- IMPORTANT: Do NOT use action "send" — it requires a specific target and will fail. Always use action "broadcast" which sends to the owner\'s default Telegram DM.',
+          '- Tool call example: message { action: "broadcast", text: "<content>", channel: "telegram" }',
+          msgParam ? `- The notification content is: "${msgParam}"` : '',
+        );
+      }
 
       const message = lines.join('\n');
 
